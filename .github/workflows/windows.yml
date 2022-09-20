@@ -29,4 +29,4 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         name: full artifacts-b${{ github.run_number }}
-        path: bin/Release-x64/
+        path: bin/
