@@ -405,48 +405,6 @@ static void processEquipRequests()
     }
 }
 
-void InventoryChanger::run(csgo::FrameStage stage) noexcept
-{
-    static int localPlayerHandle = -1;
-
-    if (localPlayer)
-        localPlayerHandle = localPlayer->handle();
-
-    if (stage == csgo::FrameStage::NET_UPDATE_POSTDATAUPDATE_START) {
-        onPostDataUpdateStart(localPlayerHandle);
-        if (hudUpdateRequired && localPlayer && !localPlayer->isDormant())
-            updateHud();
-    }
-
-    if (stage != csgo::FrameStage::RENDER_START)
-        return;
-
-    const auto localInventory = memory->inventoryManager->getLocalInventory();
-    if (!localInventory)
-        return;
-
-    using namespace inventory_changer::backend;
-
-    auto& backend = inventory_changer::InventoryChanger::instance().getBackend();
-
-    if (localPlayer)
-        applyGloves(backend, *localInventory, localPlayer.get());
-
-    applyMusicKit(backend);
-    applyPlayerAgent();
-    applyMedal(backend.getLoadout());
-
-    processEquipRequests();
-    static inventory_changer::game_integration::Inventory gameInventory{};
-    backend.run(gameInventory, std::chrono::milliseconds{ 300 });
-}
-
-void InventoryChanger::scheduleHudUpdate() noexcept
-{
-    interfaces->cvar->findVar("cl_fullupdate")->changeCallback();
-    hudUpdateRequired = true;
-}
-
 [[nodiscard]] static bool isLocalPlayerMVP(GameEvent& event)
 {
     return localPlayer && localPlayer->getUserId() == event.getInt("userid");
@@ -721,6 +679,12 @@ private:
     const WeaponNames& weaponNames;
 };
 
+void InventoryChanger::scheduleHudUpdate() noexcept
+{
+    interfaces->cvar->findVar("cl_fullupdate")->changeCallback();
+    hudUpdateRequired = true;
+}
+
 void InventoryChanger::drawGUI(bool contentOnly)
 {
     if (!contentOnly) {
@@ -743,7 +707,7 @@ void InventoryChanger::drawGUI(bool contentOnly)
     if (!isInAddMode) {
         ImGui::SameLine();
         if (ImGui::Button("Force Update"))
-            ::InventoryChanger::scheduleHudUpdate();
+            scheduleHudUpdate();
     }
 
     constexpr auto rarityColor = [](EconRarity rarity) noexcept {
@@ -797,16 +761,17 @@ void InventoryChanger::drawGUI(bool contentOnly)
                 sorted = true;
             }
 
+            Helpers::RandomGenerator randomGenerator;
             for (const auto& [i, gameItem] : gameItemList.getItems()) {
                 if (addingAll) {
-                    backend.getInventoryHandler().addItem(inventory::Item{ gameItem, item_generator::createDefaultDynamicData(gameItemLookup.getStorage(), gameItem) }, true);
+                    backend.getInventoryHandler().addItem(inventory::Item{ gameItem, item_generator::createDefaultItemProperties(randomGenerator, gameItemLookup.getStorage(), gameItem) }, true);
                 }
 
                 ImGui::PushID(i);
 
                 if (ImGui::SkinSelectable(gameItem, { 37.0f, 28.0f }, { 200.0f, 150.0f }, rarityColor(gameItem.getRarity()), &toAddCount[i])) {
                     for (int j = 0; j < toAddCount[i]; ++j)
-                        backend.getInventoryHandler().addItem(inventory::Item{ gameItem, item_generator::createDefaultDynamicData(gameItemLookup.getStorage(), gameItem) }, true);
+                        backend.getInventoryHandler().addItem(inventory::Item{ gameItem, item_generator::createDefaultItemProperties(randomGenerator, gameItemLookup.getStorage(), gameItem) }, true);
                     toAddCount[i] = 1;
                 }
                 ImGui::PopID();
@@ -842,17 +807,6 @@ void InventoryChanger::drawGUI(bool contentOnly)
         ImGui::End();
 }
 
-}
-
-void InventoryChanger::onSoUpdated(SharedObject* object) noexcept
-{
-    if (object->getTypeID() == 43 /* = k_EEconTypeDefaultEquippedDefinitionInstanceClient */) {
-        WeaponId& weaponID = *reinterpret_cast<WeaponId*>(std::uintptr_t(object) + WIN32_LINUX(0x10, 0x1C));
-        if (const auto it = std::ranges::find(equipRequests, weaponID, &EquipRequest::weaponID); it != equipRequests.end()) {
-            ++it->counter;
-            weaponID = WeaponId::None;
-        }
-    }
 }
 
 [[nodiscard]] static bool isDefaultKnifeNameLocalizationString(std::string_view string) noexcept
@@ -1070,12 +1024,12 @@ static int remapKnifeAnim(WeaponId weaponID, const int sequence) noexcept
     case WeaponId::Stiletto:
         switch (sequence) {
         case SEQUENCE_DEFAULT_LOOKAT01:
-            return Helpers::RandomGenerator::random(12, 13);
+            return Helpers::RandomGenerator{}(std::uniform_int_distribution<>{ 12, 13 });
         }
     case WeaponId::Talon:
         switch (sequence) {
         case SEQUENCE_DEFAULT_LOOKAT01:
-            return Helpers::RandomGenerator::random(14, 15);
+            return Helpers::RandomGenerator{}(std::uniform_int_distribution<>{ 14, 15 });
         }
     default:
         return sequence;
@@ -1084,6 +1038,49 @@ static int remapKnifeAnim(WeaponId weaponID, const int sequence) noexcept
 
 namespace inventory_changer
 {
+
+void InventoryChanger::onSoUpdated(SharedObject* object) noexcept
+{
+    if (object->getTypeID() == 43 /* = k_EEconTypeDefaultEquippedDefinitionInstanceClient */) {
+        WeaponId& weaponID = *reinterpret_cast<WeaponId*>(std::uintptr_t(object) + WIN32_LINUX(0x10, 0x1C));
+        if (const auto it = std::ranges::find(equipRequests, weaponID, &EquipRequest::weaponID); it != equipRequests.end()) {
+            ++it->counter;
+            weaponID = WeaponId::None;
+        }
+    }
+}
+
+void InventoryChanger::run(csgo::FrameStage stage) noexcept
+{
+    static int localPlayerHandle = -1;
+
+    if (localPlayer)
+        localPlayerHandle = localPlayer->handle();
+
+    if (stage == csgo::FrameStage::NET_UPDATE_POSTDATAUPDATE_START) {
+        onPostDataUpdateStart(localPlayerHandle);
+        if (hudUpdateRequired && localPlayer && !localPlayer->isDormant())
+            updateHud();
+    }
+
+    if (stage != csgo::FrameStage::RENDER_START)
+        return;
+
+    const auto localInventory = memory->inventoryManager->getLocalInventory();
+    if (!localInventory)
+        return;
+
+    if (localPlayer)
+        applyGloves(backend, *localInventory, localPlayer.get());
+
+    applyMusicKit(backend);
+    applyPlayerAgent();
+    applyMedal(backend.getLoadout());
+
+    processEquipRequests();
+    static game_integration::Inventory gameInventory{};
+    backend.run(gameInventory, std::chrono::milliseconds{ 300 });
+}
 
 InventoryChanger createInventoryChanger()
 {
@@ -1184,6 +1181,21 @@ void InventoryChanger::overrideHudIcon(GameEvent& event)
     }
 }
 
+[[nodiscard]] constexpr std::string_view removePrefix(std::string_view str, std::string_view prefix)
+{
+    assert(str.starts_with(prefix));
+    str.remove_prefix(prefix.length());
+    return str;
+}
+
+[[nodiscard]] csgo::Tournament extractTournamentFromString(std::string_view s)
+{
+    if (!s.starts_with("tournament:"))
+        return csgo::Tournament{};
+
+    return static_cast<csgo::Tournament>(stringToUint64(removePrefix(s, "tournament:")));
+}
+
 void InventoryChanger::getArgAsStringHook(const char* string, std::uintptr_t returnAddress, void* params)
 {
     if (returnAddress == memory->useToolGetArgAsStringReturnAddress) {
@@ -1219,13 +1231,13 @@ void InventoryChanger::getArgAsStringHook(const char* string, std::uintptr_t ret
             }
         }
     } else if (returnAddress == memory->getMyPredictionTeamIDGetArgAsStringReturnAddress) {
-        if (std::strcmp(string, "tournament:19") != 0) // PGL Antwerp 2022, TODO: Support other tournaments
+        const auto tournament = extractTournamentFromString(string);
+        if (tournament == csgo::Tournament{})
             return;
 
         const auto groupId = (std::uint16_t)hooks->panoramaMarshallHelper.callOriginal<double, 5>(params, 1);
         const auto pickInGroupIndex = (std::uint8_t)hooks->panoramaMarshallHelper.callOriginal<double, 5>(params, 2);
-
-        memory->panoramaMarshallHelper->setResult(params, static_cast<int>(backend.getPickEm().getPickedTeam({ csgo::Tournament::PglAntwerp2022, groupId, pickInGroupIndex })));
+        memory->panoramaMarshallHelper->setResult(params, static_cast<int>(backend.getPickEm().getPickedTeam({ tournament, groupId, pickInGroupIndex })));
     } else if (returnAddress == memory->setInventorySortAndFiltersGetArgAsStringReturnAddress) {
         panoramaCodeInXrayScanner = (std::strcmp(string, "xraymachine") == 0);
     } else if (returnAddress == memory->performItemCasketTransactionGetArgAsStringReturnAddress) {
@@ -1248,8 +1260,12 @@ void InventoryChanger::getNumArgsHook(unsigned numberOfArgs, std::uintptr_t retu
     if (numberOfArgs <= 1 || (numberOfArgs - 1) % 3 != 0)
         return;
 
-    const char* tournament = hooks->panoramaMarshallHelper.callOriginal<const char*, 7>(params, 0);
-    if (!tournament || std::strcmp(tournament, "tournament:19") != 0) // PGL Antwerp 2022, TODO: Support other tournaments
+    const char* tournamentStr = hooks->panoramaMarshallHelper.callOriginal<const char*, 7>(params, 0);
+    if (!tournamentStr)
+        return;
+
+    const auto tournament = extractTournamentFromString(tournamentStr);
+    if (tournament == csgo::Tournament{})
         return;
 
     for (unsigned i = 1; i < numberOfArgs; i += 3) {
@@ -1260,7 +1276,7 @@ void InventoryChanger::getNumArgsHook(unsigned numberOfArgs, std::uintptr_t retu
         if (!stickerItemID)
             continue;
 
-        placePickEmPick(groupId, pickInGroupIndex, static_cast<csgo::StickerId>((stringToUint64(stickerItemID) >> 16) & 0xFFFF));
+        placePickEmPick(tournament, groupId, pickInGroupIndex, static_cast<csgo::StickerId>((stringToUint64(stickerItemID) >> 16) & 0xFFFF));
     }
 }
 
@@ -1403,14 +1419,14 @@ void InventoryChanger::reset()
     backend.run(gameInventory, std::chrono::milliseconds{ 0 });
 }
 
-void InventoryChanger::placePickEmPick(std::uint16_t group, std::uint8_t indexInGroup, csgo::StickerId stickerID)
+void InventoryChanger::placePickEmPick(csgo::Tournament tournament, std::uint16_t group, std::uint8_t indexInGroup, csgo::StickerId stickerID)
 {
     const auto sticker = gameItemLookup.findSticker(stickerID);
     if (!sticker || !sticker->isSticker())
         return;
 
     const auto tournamentTeam = gameItemLookup.getStorage().getStickerKit(*sticker).tournamentTeam;
-    backend.getPickEmHandler().pickSticker(backend::PickEm::PickPosition{ csgo::Tournament::PglAntwerp2022, group, indexInGroup }, tournamentTeam);
+    backend.getPickEmHandler().pickSticker(backend::PickEm::PickPosition{ tournament, group, indexInGroup }, tournamentTeam);
 }
 
 }
