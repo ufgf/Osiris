@@ -1,6 +1,8 @@
 #include "Texture.h"
 
-#ifdef _WIN32
+#include "Platform/Macros/IsPlatform.h"
+
+#if IS_WIN32()
 #include "imgui/imgui_impl_dx9.h"
 #else
 #include "imgui/imgui_impl_opengl3.h"

@@ -264,9 +264,11 @@ void commonPropertiesToJson(const inventory::Item::CommonProperties& properties,
 {
     if (properties.tradableAfterDate != 0)
         j.emplace("Tradable After Date", properties.tradableAfterDate);
+    if (properties.purchasedFromStore)
+        j.emplace("Purchased From Store", true);
 }
 
-[[nodiscard]] json itemsToJson(const backend::BackendSimulator& backend)
+[[nodiscard]] json itemsToJson(const OtherInterfaces& interfaces, const Memory& memory, const backend::BackendSimulator& backend)
 {
     const auto& gameItemStorage = backend.getGameItemLookup().getStorage();
     const auto& loadout = backend.getLoadout();
@@ -297,7 +299,7 @@ void commonPropertiesToJson(const inventory::Item::CommonProperties& properties,
         const auto& item = *itemIt;
         const auto& gameItem = item.gameItem();
         itemConfig["Weapon ID"] = gameItem.getWeaponID();
-        itemConfig["Item Name"] = WeaponNames::instance().getWeaponName(gameItem.getWeaponID());
+        itemConfig["Item Name"] = WeaponNames::instance(interfaces, memory).getWeaponName(gameItem.getWeaponID());
 
         commonPropertiesToJson(item.getProperties().common, itemConfig);
 
@@ -321,7 +323,7 @@ void commonPropertiesToJson(const inventory::Item::CommonProperties& properties,
             itemConfig["Graffiti ID"] = gameItemStorage.getGraffitiKit(gameItem).id;
             if (const auto graffiti = get<inventory::Graffiti>(item); graffiti && graffiti->usesLeft >= 0) {
                 itemConfig["Uses Left"] = graffiti->usesLeft;
-                itemConfig["Item Name"] = WeaponNames::instance().getWeaponName(WeaponId::Graffiti);
+                itemConfig["Item Name"] = WeaponNames::instance(interfaces, memory).getWeaponName(WeaponId::Graffiti);
             }
         } else if (gameItem.isAgent()) {
             agentToJson(item, itemConfig);
@@ -350,7 +352,7 @@ void commonPropertiesToJson(const inventory::Item::CommonProperties& properties,
 
 }
 
-json inventory_changer::toJson(const InventoryChanger& inventoryChanger)
+json inventory_changer::toJson(const OtherInterfaces& interfaces, const Memory& memory, const InventoryChanger& inventoryChanger)
 {
     json j;
 
@@ -358,7 +360,7 @@ json inventory_changer::toJson(const InventoryChanger& inventoryChanger)
 
     const auto& backend = inventoryChanger.getBackend();
 
-    j.emplace("Items", itemsToJson(backend));
+    j.emplace("Items", itemsToJson(interfaces, memory, backend));
     j.emplace("Pick'Em", ::toJson(backend.getPickEm()));
     return j;
 }
@@ -379,6 +381,9 @@ namespace inventory_changer
 
     if (const auto it = j.find("Tradable After Date"); it != j.end() && it->is_number_unsigned())
         properties.tradableAfterDate = it->get<std::uint32_t>();
+
+    if (const auto it = j.find("Purchased From Store"); it != j.end() && it->is_boolean())
+        properties.purchasedFromStore = it->get<bool>();
 
     return properties;
 }

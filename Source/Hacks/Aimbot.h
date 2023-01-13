@@ -1,12 +1,21 @@
 #pragma once
 
-struct UserCmd;
-struct Vector;
+#include <Config.h>
+#include "../Memory.h"
 
-namespace Aimbot
+namespace csgo
 {
-    Vector calculateRelativeAngle(const Vector& source, const Vector& destination, const Vector& viewAngles) noexcept;
-    void run(UserCmd*) noexcept;
-
-    void updateInput() noexcept;
+    struct UserCmd;
+    struct Vector;
 }
+
+class ClientInterfaces;
+class EngineInterfaces;
+
+class Aimbot {
+public:
+    static csgo::Vector calculateRelativeAngle(const csgo::Vector& source, const csgo::Vector& destination, const csgo::Vector& viewAngles) noexcept;
+    void run(Misc& misc, const EngineInterfaces& engineInterfaces, const ClientInterfaces& clientInterfaces, const OtherInterfaces& interfaces, const Config& config, const Memory& memory, csgo::UserCmd*) noexcept;
+
+    void updateInput(const Config& config) noexcept;
+};

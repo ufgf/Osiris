@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <memory>
 
-#include "../SDK/Platform.h"
+#include <Platform/Macros/CallingConventions.h>
+#include <Platform/Macros/PlatformSpecific.h>
 
 class VmtSwap {
 public:

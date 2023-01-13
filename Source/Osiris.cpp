@@ -1,13 +1,16 @@
 #include <memory>
 
-#ifdef _WIN32
+#include "Platform/Macros/IsPlatform.h"
+
+#if IS_WIN32()
 #include <clocale>
 #include <Windows.h>
 #endif
 
+#include "Endpoints.h"
 #include "Hooks.h"
 
-#ifdef _WIN32
+#if IS_WIN32()
 
 extern "C" BOOL WINAPI _CRT_INIT(HMODULE moduleHandle, DWORD reason, LPVOID reserved);
 
@@ -18,6 +21,7 @@ BOOL APIENTRY DllEntryPoint(HMODULE moduleHandle, DWORD reason, LPVOID reserved)
 
     if (reason == DLL_PROCESS_ATTACH) {
         std::setlocale(LC_CTYPE, ".utf8");
+        initializeGlobalContext();
         hooks.emplace(moduleHandle);
     }
     return TRUE;
@@ -27,6 +31,7 @@ BOOL APIENTRY DllEntryPoint(HMODULE moduleHandle, DWORD reason, LPVOID reserved)
 
 void __attribute__((constructor)) DllEntryPoint()
 {
+    initializeGlobalContext();
     hooks.emplace(Hooks{});
 }
 

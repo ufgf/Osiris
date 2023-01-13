@@ -13,40 +13,23 @@
 #include "../InputUtil.h"
 #include "Glow.h"
 #include "../Helpers.h"
-#include "../Interfaces.h"
 #include "../Memory.h"
-#include <SDK/Constants/ClassId.h>
-#include "../SDK/ClientClass.h"
-#include "../SDK/Engine.h"
-#include "../SDK/Entity.h"
-#include "../SDK/EntityList.h"
-#include "../SDK/GlowObjectManager.h"
-#include "../SDK/LocalPlayer.h"
-#include "../SDK/Utils.h"
-#include "../SDK/UtlVector.h"
-#include "../SDK/Vector.h"
+#include <CSGO/Constants/ClassId.h>
+#include <CSGO/ClientClass.h>
+#include <CSGO/Engine.h>
+#include <CSGO/Entity.h>
+#include <CSGO/EntityList.h>
+#include <CSGO/GlobalVars.h>
+#include <CSGO/GlowObjectManager.h>
+#include <CSGO/LocalPlayer.h>
+#include <CSGO/Utils.h>
+#include <CSGO/UtlVector.h>
+#include <CSGO/Vector.h>
 #include "../imguiCustom.h"
 
-#if OSIRIS_GLOW()
+#include <Interfaces/ClientInterfaces.h>
 
-struct GlowItem : Color4 {
-    bool enabled = false;
-    bool healthBased = false;
-    int style = 0;
-};
-
-struct PlayerGlow {
-    GlowItem all, visible, occluded;
-};
-
-static std::unordered_map<std::string, PlayerGlow> playerGlowConfig;
-static std::unordered_map<std::string, GlowItem> glowConfig;
-static KeyBindToggle glowToggleKey;
-static KeyBind glowHoldKey;
-
-static std::vector<std::pair<int, int>> customGlowEntities;
-
-void Glow::render() noexcept
+void Glow::render(const EngineInterfaces& engineInterfaces, const ClientInterfaces& clientInterfaces, const Memory& memory) noexcept
 {
     if (!localPlayer)
         return;
@@ -62,13 +45,13 @@ void Glow::render() noexcept
         return;
     }
 
-    const auto highestEntityIndex = interfaces->entityList->getHighestEntityIndex();
-    for (int i = interfaces->engine->getMaxClients() + 1; i <= highestEntityIndex; ++i) {
-        const auto entity = interfaces->entityList->getEntity(i);
-        if (!entity || entity->isDormant())
+    const auto highestEntityIndex = clientInterfaces.getEntityList().getHighestEntityIndex();
+    for (int i = engineInterfaces.getEngine().getMaxClients() + 1; i <= highestEntityIndex; ++i) {
+        const auto entity = csgo::Entity::from(retSpoofGadgets->client, clientInterfaces.getEntityList().getEntity(i));
+        if (entity.getPOD() == nullptr || entity.getNetworkable().isDormant())
             continue;
 
-        switch (entity->getClientClass()->classId) {
+        switch (entity.getNetworkable().getClientClass()->classId) {
         case ClassId::EconEntity:
         case ClassId::BaseCSGrenadeProjectile:
         case ClassId::BreachChargeProjectile:
@@ -80,8 +63,8 @@ void Glow::render() noexcept
         case ClassId::SnowballProjectile:
         case ClassId::Hostage:
         case ClassId::CSRagdoll:
-            if (!memory->glowObjectManager->hasGlowEffect(entity)) {
-                if (auto index{ memory->glowObjectManager->registerGlowObject(entity) }; index != -1)
+            if (!glowObjectManager->hasGlowEffect(entity.getPOD())) {
+                if (auto index{ glowObjectManager->registerGlowObject(entity.getPOD() WIN32_ARGS(, glowObjectAntiCheatCheck)) }; index != -1)
                     customGlowEntities.emplace_back(i, index);
             }
             break;
@@ -90,15 +73,15 @@ void Glow::render() noexcept
         }
     }
 
-    for (int i = 0; i < memory->glowObjectManager->glowObjectDefinitions.size; i++) {
-        GlowObjectDefinition& glowobject = memory->glowObjectManager->glowObjectDefinitions[i];
+    for (int i = 0; i < glowObjectManager->glowObjectDefinitions.size; i++) {
+        csgo::GlowObjectDefinition& glowobject = glowObjectManager->glowObjectDefinitions[i];
 
-        auto entity = glowobject.entity;
+        const auto entity = csgo::Entity::from(retSpoofGadgets->client, glowobject.entity);
 
-        if (glowobject.isUnused() || !entity || entity->isDormant())
+        if (glowobject.isUnused() || entity.getPOD() == nullptr || entity.getNetworkable().isDormant())
             continue;
 
-        auto applyGlow = [&glowobject](const GlowItem& glow, int health = 0) noexcept
+        auto applyGlow = [&glowobject, &memory, this](const GlowItem& glow, int health = 0) noexcept
         {
             if (glow.enabled) {
                 glowobject.renderWhenOccluded = true;
@@ -108,35 +91,38 @@ void Glow::render() noexcept
                 if (glow.healthBased && health) {
                     Helpers::healthColor(std::clamp(health / 100.0f, 0.0f, 1.0f), glowobject.glowColor.x, glowobject.glowColor.y, glowobject.glowColor.z);
                 } else if (glow.rainbow) {
-                    const auto [r, g, b] { rainbowColor(glow.rainbowSpeed) };
+                    const auto [r, g, b] { rainbowColor(memory.globalVars->realtime, glow.rainbowSpeed) };
                     glowobject.glowColor = { r, g, b };
                 } else {
                     glowobject.glowColor = { glow.color[0], glow.color[1], glow.color[2] };
                 }
+#if IS_WIN32()
+                glowObjectAntiCheatCheck(&glowobject.entity);
+#endif
             }
         };
 
-        auto applyPlayerGlow = [applyGlow](const std::string& name, Entity* entity) noexcept {
+        auto applyPlayerGlow = [this, applyGlow, &memory, &engineInterfaces](const std::string& name, const csgo::Entity& entity) noexcept {
             const auto& cfg = playerGlowConfig[name];
-            if (cfg.all.enabled)
-                applyGlow(cfg.all, entity->health());
-            else if (cfg.visible.enabled && entity->visibleTo(localPlayer.get()))
-                applyGlow(cfg.visible, entity->health());
-            else if (cfg.occluded.enabled && !entity->visibleTo(localPlayer.get()))
-                applyGlow(cfg.occluded, entity->health());
+            if (cfg.all.enabled) 
+                applyGlow(cfg.all, entity.health());
+            else if (cfg.visible.enabled && entity.visibleTo(engineInterfaces, memory, localPlayer.get()))
+                applyGlow(cfg.visible, entity.health());
+            else if (cfg.occluded.enabled && !entity.visibleTo(engineInterfaces, memory, localPlayer.get()))
+                applyGlow(cfg.occluded, entity.health());
         };
 
-        switch (entity->getClientClass()->classId) {
+        switch (entity.getNetworkable().getClientClass()->classId) {
         case ClassId::CSPlayer:
-            if (!entity->isAlive())
+            if (!entity.isAlive())
                 break;
-            if (auto activeWeapon{ entity->getActiveWeapon() }; activeWeapon && activeWeapon->getClientClass()->classId == ClassId::C4 && activeWeapon->c4StartedArming())
+            if (const auto activeWeapon = csgo::Entity::from(retSpoofGadgets->client, entity.getActiveWeapon()); activeWeapon.getPOD() != nullptr && activeWeapon.getNetworkable().getClientClass()->classId == ClassId::C4 && activeWeapon.c4StartedArming())
                 applyPlayerGlow("Planting", entity);
-            else if (entity->isDefusing())
+            else if (entity.isDefusing())
                 applyPlayerGlow("Defusing", entity);
-            else if (entity == localPlayer.get())
-                applyGlow(glow["Local Player"], entity->health());
-            else if (entity->isOtherEnemy(localPlayer.get()))
+            else if (entity.getPOD() == localPlayer.get().getPOD())
+                applyGlow(glow["Local Player"], entity.health());
+            else if (entity.isOtherEnemy(memory, localPlayer.get()))
                 applyPlayerGlow("Enemies", entity);
             else
                 applyPlayerGlow("Allies", entity);
@@ -159,9 +145,14 @@ void Glow::render() noexcept
         case ClassId::Hostage: applyGlow(glow["Hostages"]); break;
         case ClassId::CSRagdoll: applyGlow(glow["Ragdolls"]); break;
         default:
-           if (entity->isWeapon()) {
+           if (entity.isWeapon()) {
                 applyGlow(glow["Weapons"]);
-                if (!glow["Weapons"].enabled) glowobject.renderWhenOccluded = false;
+                if (!glow["Weapons"].enabled) {
+                    glowobject.renderWhenOccluded = false;
+#if IS_WIN32()
+                    glowObjectAntiCheatCheck(&glowobject.entity);
+#endif
+                }
             }
         }
     }
@@ -170,7 +161,7 @@ void Glow::render() noexcept
 void Glow::clearCustomObjects() noexcept
 {
     for (const auto& [entityIndex, glowObjectIndex] : customGlowEntities)
-        memory->glowObjectManager->unregisterGlowObject(glowObjectIndex);
+        glowObjectManager->unregisterGlowObject(glowObjectIndex WIN32_ARGS(, glowObjectAntiCheatCheck));
 
     customGlowEntities.clear();
 }
@@ -253,7 +244,7 @@ void Glow::drawGUI(bool contentOnly) noexcept
         ImGui::End();
 }
 
-static void to_json(json& j, const GlowItem& o, const GlowItem& dummy = {})
+static void to_json(json& j, const Glow::GlowItem& o, const Glow::GlowItem& dummy = {})
 {
     to_json(j, static_cast<const Color4&>(o), dummy);
     WRITE("Enabled", enabled);
@@ -261,7 +252,7 @@ static void to_json(json& j, const GlowItem& o, const GlowItem& dummy = {})
     WRITE("Style", style);
 }
 
-static void to_json(json& j, const PlayerGlow& o, const PlayerGlow& dummy = {})
+static void to_json(json& j, const Glow::PlayerGlow& o, const Glow::PlayerGlow& dummy = {})
 {
     WRITE("All", all);
     WRITE("Visible", visible);
@@ -278,7 +269,7 @@ json Glow::toJson() noexcept
     return j;
 }
 
-static void from_json(const json& j, GlowItem& g)
+static void from_json(const json& j, Glow::GlowItem& g)
 {
     from_json(j, static_cast<Color4&>(g));
 
@@ -287,7 +278,7 @@ static void from_json(const json& j, GlowItem& g)
     read(j, "Style", g.style);
 }
 
-static void from_json(const json& j, PlayerGlow& g)
+static void from_json(const json& j, Glow::PlayerGlow& g)
 {
     read<value_t::object>(j, "All", g.all);
     read<value_t::object>(j, "Visible", g.visible);
@@ -309,21 +300,3 @@ void Glow::resetConfig() noexcept
     glowToggleKey = {};
     glowHoldKey = {};
 }
-
-#else
-
-void Glow::render() noexcept {}
-void Glow::clearCustomObjects() noexcept {}
-void Glow::updateInput() noexcept {}
-
-// GUI
-void Glow::menuBarItem() noexcept {}
-void Glow::tabItem() noexcept {}
-void Glow::drawGUI(bool contentOnly) noexcept {}
-
-// Config
-json Glow::toJson() noexcept { return {}; }
-void Glow::fromJson(const json& j) noexcept {}
-void Glow::resetConfig() noexcept {}
-
-#endif

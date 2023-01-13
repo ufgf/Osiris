@@ -3,12 +3,11 @@
 #include <string_view>
 
 #include "../JsonForward.h"
-
-#define OSIRIS_SOUND() true
+#include "../Memory.h"
 
 namespace Sound
 {
-    void modulateSound(std::string_view name, int entityIndex, float& volume) noexcept;
+    void modulateSound(const ClientInterfaces& clientInterfaces, const Memory& memory, std::string_view name, int entityIndex, float& volume) noexcept;
 
     // GUI
     void menuBarItem() noexcept;

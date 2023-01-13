@@ -9,7 +9,6 @@
 
 #include "fnv.h"
 #include "GameData.h"
-#include "Interfaces.h"
 #include "Memory.h"
 
 #include "Resources/avatar_ct.h"
@@ -17,31 +16,34 @@
 
 #include <stb_image.h>
 
-#include "SDK/Constants/ClassId.h"
-#include "SDK/ClientClass.h"
-#include "SDK/Engine.h"
-#include "SDK/Entity.h"
-#include "SDK/EntityList.h"
-#include "SDK/GlobalVars.h"
-#include "SDK/Localize.h"
-#include "SDK/LocalPlayer.h"
-#include "SDK/ModelInfo.h"
-#include "SDK/ModelRender.h"
-#include "SDK/NetworkChannel.h"
-#include "SDK/PlantedC4.h"
-#include "SDK/PlayerResource.h"
-#include "SDK/Sound.h"
-#include "SDK/Steam.h"
-#include "SDK/UtlVector.h"
-#include "SDK/WeaponId.h"
-#include "SDK/WeaponData.h"
+#include "CSGO/Constants/ClassId.h"
+#include "CSGO/ClientClass.h"
+#include "CSGO/Engine.h"
+#include "CSGO/Entity.h"
+#include "CSGO/EntityList.h"
+#include "CSGO/GlobalVars.h"
+#include "CSGO/Localize.h"
+#include "CSGO/LocalPlayer.h"
+#include "CSGO/ModelInfo.h"
+#include "CSGO/ModelRender.h"
+#include "CSGO/NetworkChannel.h"
+#include "CSGO/PlantedC4.h"
+#include "CSGO/PlayerResource.h"
+#include "CSGO/Sound.h"
+#include "CSGO/Steam.h"
+#include "CSGO/UtlVector.h"
+#include "CSGO/WeaponId.h"
+#include "CSGO/WeaponData.h"
+
+#include <Interfaces/ClientInterfaces.h>
+#include <Interfaces/OtherInterfaces.h>
 
 auto operator<(const BaseData& a, const BaseData& b) noexcept
 {
     return a.distanceToLocal > b.distanceToLocal;
 }
 
-static Matrix4x4 viewMatrix;
+static csgo::Matrix4x4 viewMatrix;
 static LocalPlayerData localPlayerData;
 static std::vector<PlayerData> playerData;
 static std::vector<ObserverData> observerData;
@@ -59,10 +61,10 @@ static auto playerByHandleWritable(int handle) noexcept
     return it != playerData.end() ? &(*it) : nullptr;
 }
 
-static void updateNetLatency() noexcept
+static void updateNetLatency(const csgo::Engine& engine) noexcept
 {
-    if (const auto networkChannel = interfaces->engine->getNetworkChannel())
-        netOutgoingLatency = (std::max)(static_cast<int>(networkChannel->getLatency(0) * 1000.0f), 0);
+    if (const auto networkChannel = engine.getNetworkChannel())
+        netOutgoingLatency = (std::max)(static_cast<int>(csgo::NetworkChannel::from(retSpoofGadgets->client, networkChannel).getLatency(0) * 1000.0f), 0);
     else
         netOutgoingLatency = 0;
 }
@@ -70,19 +72,19 @@ static void updateNetLatency() noexcept
 constexpr auto playerVisibilityUpdateDelay = 0.1f;
 static float nextPlayerVisibilityUpdateTime = 0.0f;
 
-static bool shouldUpdatePlayerVisibility() noexcept
+static bool shouldUpdatePlayerVisibility(const Memory& memory) noexcept
 {
-    return nextPlayerVisibilityUpdateTime <= memory->globalVars->realtime;
+    return nextPlayerVisibilityUpdateTime <= memory.globalVars->realtime;
 }
 
-void GameData::update() noexcept
+void GameData::update(const ClientInterfaces& clientInterfaces, const EngineInterfaces& engineInterfaces, const OtherInterfaces& interfaces, const Memory& memory) noexcept
 {
     static int lastFrame;
-    if (lastFrame == memory->globalVars->framecount)
+    if (lastFrame == memory.globalVars->framecount)
         return;
-    lastFrame = memory->globalVars->framecount;
+    lastFrame = memory.globalVars->framecount;
 
-    updateNetLatency();
+    updateNetLatency(engineInterfaces.getEngine());
 
     Lock lock;
     observerData.clear();
@@ -91,8 +93,8 @@ void GameData::update() noexcept
     lootCrateData.clear();
     infernoData.clear();
 
-    localPlayerData.update();
-    bombData.update();
+    localPlayerData.update(engineInterfaces.getEngine());
+    bombData.update(memory);
 
     if (!localPlayer) {
         playerData.clear();
@@ -100,42 +102,42 @@ void GameData::update() noexcept
         return;
     }
 
-    viewMatrix = interfaces->engine->worldToScreenMatrix();
+    viewMatrix = engineInterfaces.getEngine().worldToScreenMatrix();
 
-    const auto observerTarget = localPlayer->getObserverMode() == ObsMode::InEye ? localPlayer->getObserverTarget() : nullptr;
+    const auto observerTarget = csgo::Entity::from(retSpoofGadgets->client, localPlayer.get().getObserverMode() == ObsMode::InEye ? localPlayer.get().getObserverTarget() : nullptr);
 
-    const auto highestEntityIndex = interfaces->entityList->getHighestEntityIndex();
+    const auto highestEntityIndex = clientInterfaces.getEntityList().getHighestEntityIndex();
     for (int i = 1; i <= highestEntityIndex; ++i) {
-        const auto entity = interfaces->entityList->getEntity(i);
-        if (!entity)
+        const auto entity = csgo::Entity::from(retSpoofGadgets->client, clientInterfaces.getEntityList().getEntity(i));
+        if (entity.getPOD() == nullptr)
             continue;
 
-        if (entity->isPlayer()) {
-            if (entity == localPlayer.get() || entity == observerTarget)
+        if (entity.isPlayer()) {
+            if (entity.getPOD() == localPlayer.get().getPOD() || entity.getPOD() == observerTarget.getPOD())
                 continue;
 
-            if (const auto player = playerByHandleWritable(entity->handle())) {
-                player->update(entity);
+            if (const auto player = playerByHandleWritable(entity.handle())) {
+                player->update(engineInterfaces, interfaces, memory, entity);
             } else {
-                playerData.emplace_back(entity);
+                playerData.emplace_back(engineInterfaces, interfaces, memory, entity);
             }
 
-            if (!entity->isDormant() && !entity->isAlive()) {
-                if (const auto obs = entity->getObserverTarget())
-                    observerData.emplace_back(entity, obs, obs == localPlayer.get());
+            if (!entity.getNetworkable().isDormant() && !entity.isAlive()) {
+                if (const auto obs = csgo::Entity::from(retSpoofGadgets->client, entity.getObserverTarget()); obs.getPOD() != nullptr)
+                    observerData.emplace_back(entity, obs, obs.getPOD() == localPlayer.get().getPOD());
             }
         } else {
-            if (entity->isDormant())
+            if (entity.getNetworkable().isDormant())
                 continue;
 
-            if (entity->isWeapon()) {
-                if (entity->ownerEntity() == -1)
-                    weaponData.emplace_back(entity);
+            if (entity.isWeapon()) {
+                if (entity.ownerEntity() == -1)
+                    weaponData.emplace_back(interfaces, entity);
             } else {
-                switch (entity->getClientClass()->classId) {
+                switch (entity.getNetworkable().getClientClass()->classId) {
                 case ClassId::BaseCSGrenadeProjectile:
-                    if (!entity->shouldDraw()) {
-                        if (const auto it = std::ranges::find(projectileData, entity->handle(), &ProjectileData::handle); it != projectileData.end())
+                    if (!entity.shouldDraw()) {
+                        if (const auto it = std::ranges::find(projectileData, entity.handle(), &ProjectileData::handle); it != projectileData.end())
                             it->exploded = true;
                         break;
                     }
@@ -147,13 +149,13 @@ void GameData::update() noexcept
                 case ClassId::SensorGrenadeProjectile:
                 case ClassId::SmokeGrenadeProjectile:
                 case ClassId::SnowballProjectile:
-                    if (const auto it = std::ranges::find(projectileData, entity->handle(), &ProjectileData::handle); it != projectileData.end())
-                        it->update(entity);
+                    if (const auto it = std::ranges::find(projectileData, entity.handle(), &ProjectileData::handle); it != projectileData.end())
+                        it->update(memory, entity);
                     else
-                        projectileData.emplace_front(entity);
+                        projectileData.emplace_front(clientInterfaces, memory, entity);
                     break;
                 case ClassId::DynamicProp:
-                    if (const auto model = entity->getModel(); !model || !std::strstr(model->name, "challenge_coin"))
+                    if (const auto model = entity.getRenderable().getModel(); !model || !std::strstr(model->name, "challenge_coin"))
                         break;
                     [[fallthrough]];
                 case ClassId::EconEntity:
@@ -185,18 +187,18 @@ void GameData::update() noexcept
     std::sort(entityData.begin(), entityData.end());
     std::sort(lootCrateData.begin(), lootCrateData.end());
 
-    std::ranges::for_each(projectileData, [](auto& projectile) {
-        if (interfaces->entityList->getEntityFromHandle(projectile.handle) == nullptr)
+    std::ranges::for_each(projectileData, [&clientInterfaces](auto& projectile) {
+        if (clientInterfaces.getEntityList().getEntityFromHandle(projectile.handle) == 0)
             projectile.exploded = true;
     });
 
-    std::erase_if(projectileData, [](const auto& projectile) { return interfaces->entityList->getEntityFromHandle(projectile.handle) == nullptr
-        && (projectile.trajectory.size() < 1 || projectile.trajectory[projectile.trajectory.size() - 1].first + 60.0f < memory->globalVars->realtime); });
+    std::erase_if(projectileData, [&memory, &clientInterfaces](const auto& projectile) { return clientInterfaces.getEntityList().getEntityFromHandle(projectile.handle) == 0
+        && (projectile.trajectory.size() < 1 || projectile.trajectory[projectile.trajectory.size() - 1].first + 60.0f < memory.globalVars->realtime); });
 
-    std::erase_if(playerData, [](const auto& player) { return interfaces->entityList->getEntityFromHandle(player.handle) == nullptr; });
+    std::erase_if(playerData, [&clientInterfaces](const auto& player) { return clientInterfaces.getEntityList().getEntityFromHandle(player.handle) == 0; });
 
-    if (shouldUpdatePlayerVisibility())
-        nextPlayerVisibilityUpdateTime = memory->globalVars->realtime + playerVisibilityUpdateDelay;
+    if (shouldUpdatePlayerVisibility(memory))
+        nextPlayerVisibilityUpdateTime = memory.globalVars->realtime + playerVisibilityUpdateDelay;
 }
 
 void GameData::clearProjectileList() noexcept
@@ -234,7 +236,7 @@ int GameData::getNetOutgoingLatency() noexcept
     return netOutgoingLatency;
 }
 
-const Matrix4x4& GameData::toScreenMatrix() noexcept
+const csgo::Matrix4x4& GameData::toScreenMatrix() noexcept
 {
     return viewMatrix;
 }
@@ -289,7 +291,7 @@ const std::vector<InfernoData>& GameData::infernos() noexcept
     return infernoData;
 }
 
-void LocalPlayerData::update() noexcept
+void LocalPlayerData::update(const csgo::Engine& engine) noexcept
 {
     if (!localPlayer) {
         exists = false;
@@ -297,47 +299,47 @@ void LocalPlayerData::update() noexcept
     }
 
     exists = true;
-    alive = localPlayer->isAlive();
+    alive = localPlayer.get().isAlive();
 
-    if (const auto activeWeapon = localPlayer->getActiveWeapon()) {
-        inReload = activeWeapon->isInReload();
-        shooting = localPlayer->shotsFired() > 1;
-        noScope = activeWeapon->isSniperRifle() && !localPlayer->isScoped();
-        nextWeaponAttack = activeWeapon->nextPrimaryAttack();
+    if (const auto activeWeapon = csgo::Entity::from(retSpoofGadgets->client, localPlayer.get().getActiveWeapon()); activeWeapon.getPOD() != nullptr) {
+        inReload = activeWeapon.isInReload();
+        shooting = localPlayer.get().shotsFired() > 1;
+        noScope = activeWeapon.isSniperRifle() && !localPlayer.get().isScoped();
+        nextWeaponAttack = activeWeapon.nextPrimaryAttack();
     }
-    fov = localPlayer->fov() ? localPlayer->fov() : localPlayer->defaultFov();
-    handle = localPlayer->handle();
-    flashDuration = localPlayer->flashDuration();
+    fov = localPlayer.get().fov() ? localPlayer.get().fov() : localPlayer.get().defaultFov();
+    handle = localPlayer.get().handle();
+    flashDuration = localPlayer.get().flashDuration();
 
-    aimPunch = localPlayer->getEyePosition() + Vector::fromAngle(interfaces->engine->getViewAngles() + localPlayer->getAimPunch()) * 1000.0f;
+    aimPunch = localPlayer.get().getEyePosition() + csgo::Vector::fromAngle(engine.getViewAngles() + localPlayer.get().getAimPunch()) * 1000.0f;
 
-    const auto obsMode = localPlayer->getObserverMode();
-    if (const auto obs = localPlayer->getObserverTarget(); obs && obsMode != ObsMode::Roaming && obsMode != ObsMode::Deathcam)
-        origin = obs->getAbsOrigin();
+    const auto obsMode = localPlayer.get().getObserverMode();
+    if (const auto obs = csgo::Entity::from(retSpoofGadgets->client, localPlayer.get().getObserverTarget()); obs.getPOD() != nullptr && obsMode != ObsMode::Roaming && obsMode != ObsMode::Deathcam)
+        origin = obs.getAbsOrigin();
     else
-        origin = localPlayer->getAbsOrigin();
+        origin = localPlayer.get().getAbsOrigin();
 }
 
-BaseData::BaseData(Entity* entity) noexcept
+BaseData::BaseData(const csgo::Entity& entity) noexcept
 {
-    distanceToLocal = entity->getAbsOrigin().distTo(localPlayerData.origin);
+    distanceToLocal = entity.getAbsOrigin().distTo(localPlayerData.origin);
  
-    if (entity->isPlayer()) {
-        const auto collideable = entity->getCollideable();
-        obbMins = collideable->obbMins();
-        obbMaxs = collideable->obbMaxs();
-    } else if (const auto model = entity->getModel()) {
+    if (entity.isPlayer()) {
+        const csgo::Collideable collideable{ retSpoofGadgets->client, entity.getCollideable() };
+        obbMins = collideable.obbMins();
+        obbMaxs = collideable.obbMaxs();
+    } else if (const auto model = entity.getRenderable().getModel()) {
         obbMins = model->mins;
         obbMaxs = model->maxs;
     }
 
-    coordinateFrame = entity->toWorldTransform();
+    coordinateFrame = entity.getRenderable().toWorldTransform();
 }
 
-EntityData::EntityData(Entity* entity) noexcept : BaseData{ entity }
+EntityData::EntityData(const csgo::Entity& entity) noexcept : BaseData{ entity }
 {
-    name = [](Entity* entity) {
-        switch (entity->getClientClass()->classId) {
+    name = [](const csgo::Entity& entity) {
+        switch (entity.getNetworkable().getClientClass()->classId) {
         case ClassId::EconEntity: return "Defuse Kit";
         case ClassId::Chicken: return "Chicken";
         case ClassId::PlantedC4: return "Planted C4";
@@ -353,12 +355,12 @@ EntityData::EntityData(Entity* entity) noexcept : BaseData{ entity }
     }(entity);
 }
 
-ProjectileData::ProjectileData(Entity* projectile) noexcept : BaseData { projectile }
+ProjectileData::ProjectileData(const ClientInterfaces& clientInterfaces, const Memory& memory, const csgo::Entity& projectile) noexcept : BaseData { projectile }
 {
-    name = [](Entity* projectile) {
-        switch (projectile->getClientClass()->classId) {
+    name = [](const csgo::Entity& projectile) {
+        switch (projectile.getNetworkable().getClientClass()->classId) {
         case ClassId::BaseCSGrenadeProjectile:
-            if (const auto model = projectile->getModel(); model && strstr(model->name, "flashbang"))
+            if (const auto model = projectile.getRenderable().getModel(); model && strstr(model->name, "flashbang"))
                 return "Flashbang";
             else
                 return "HE Grenade";
@@ -373,96 +375,96 @@ ProjectileData::ProjectileData(Entity* projectile) noexcept : BaseData { project
         }
     }(projectile);
 
-    if (const auto thrower = interfaces->entityList->getEntityFromHandle(projectile->thrower()); thrower && localPlayer) {
-        if (thrower == localPlayer.get())
+    if (const auto thrower = csgo::Entity::from(retSpoofGadgets->client, clientInterfaces.getEntityList().getEntityFromHandle(projectile.thrower())); thrower.getPOD() != nullptr && localPlayer) {
+        if (thrower.getPOD() == localPlayer.get().getPOD())
             thrownByLocalPlayer = true;
         else
-            thrownByEnemy = localPlayer->isOtherEnemy(thrower);
+            thrownByEnemy = localPlayer.get().isOtherEnemy(memory, thrower);
     }
 
-    handle = projectile->handle();
+    handle = projectile.handle();
 }
 
-void ProjectileData::update(Entity* projectile) noexcept
+void ProjectileData::update(const Memory& memory, const csgo::Entity& projectile) noexcept
 {
     static_cast<BaseData&>(*this) = { projectile };
 
-    if (const auto& pos = projectile->getAbsOrigin(); trajectory.size() < 1 || trajectory[trajectory.size() - 1].second != pos)
-        trajectory.emplace_back(memory->globalVars->realtime, pos);
+    if (const auto& pos = projectile.getAbsOrigin(); trajectory.size() < 1 || trajectory[trajectory.size() - 1].second != pos)
+        trajectory.emplace_back(memory.globalVars->realtime, pos);
 }
 
-PlayerData::PlayerData(Entity* entity) noexcept : BaseData{ entity }, handle{ entity->handle() }
+PlayerData::PlayerData(const EngineInterfaces& engineInterfaces, const OtherInterfaces& interfaces, const Memory& memory, const csgo::Entity& entity) noexcept : BaseData{ entity }, handle{ entity.handle() }
 {
-    if (const auto steamID = entity->getSteamId()) {
-        const auto ctx = interfaces->engine->getSteamAPIContext();
-        const auto avatar = ctx->steamFriends->getSmallFriendAvatar(steamID);
+    if (const auto steamID = entity.getSteamId(engineInterfaces.getEngine())) {
+        const auto ctx = engineInterfaces.getEngine().getSteamAPIContext();
+        const auto avatar = csgo::SteamFriends::from(retSpoofGadgets->client, ctx->steamFriends).getSmallFriendAvatar(steamID);
         constexpr auto rgbaDataSize = 4 * 32 * 32;
 
         PlayerAvatar playerAvatar;
         playerAvatar.rgba = std::make_unique<std::uint8_t[]>(rgbaDataSize);
-        if (ctx->steamUtils->getImageRGBA(avatar, playerAvatar.rgba.get(), rgbaDataSize))
+        if (csgo::SteamUtils::from(retSpoofGadgets->client, ctx->steamUtils).getImageRGBA(avatar, playerAvatar.rgba.get(), rgbaDataSize))
             playerAvatars[handle] = std::move(playerAvatar);
     }
 
-    update(entity);
+    update(engineInterfaces, interfaces, memory, entity);
 }
 
-void PlayerData::update(Entity* entity) noexcept
+void PlayerData::update(const EngineInterfaces& engineInterfaces, const OtherInterfaces& interfaces, const Memory& memory, const csgo::Entity& entity) noexcept
 {
-    name = entity->getPlayerName();
+    name = entity.getPlayerName(interfaces, memory);
 
-    dormant = entity->isDormant();
+    dormant = entity.getNetworkable().isDormant();
     if (dormant)
         return;
 
-    team = entity->getTeamNumber();
+    team = entity.getTeamNumber();
     static_cast<BaseData&>(*this) = { entity };
-    origin = entity->getAbsOrigin();
-    inViewFrustum = !interfaces->engine->cullBox(obbMins + origin, obbMaxs + origin);
-    alive = entity->isAlive();
-    lastContactTime = alive ? memory->globalVars->realtime : 0.0f;
+    origin = entity.getAbsOrigin();
+    inViewFrustum = !engineInterfaces.getEngine().cullBox(obbMins + origin, obbMaxs + origin);
+    alive = entity.isAlive();
+    lastContactTime = alive ? memory.globalVars->realtime : 0.0f;
 
     if (localPlayer) {
-        enemy = localPlayer->isOtherEnemy(entity);
+        enemy = localPlayer.get().isOtherEnemy(memory, entity);
 
         if (!inViewFrustum || !alive)
             visible = false;
-        else if (shouldUpdatePlayerVisibility())
-            visible = entity->visibleTo(localPlayer.get());
+        else if (shouldUpdatePlayerVisibility(memory))
+            visible = entity.visibleTo(engineInterfaces, memory, localPlayer.get());
     }
 
-    constexpr auto isEntityAudible = [](int entityIndex) noexcept {
-        for (int i = 0; i < memory->activeChannels->count; ++i)
-            if (memory->channels[memory->activeChannels->list[i]].soundSource == entityIndex)
+    auto isEntityAudible = [&memory](int entityIndex) noexcept {
+        for (int i = 0; i < memory.activeChannels->count; ++i)
+            if (memory.channels[memory.activeChannels->list[i]].soundSource == entityIndex)
                 return true;
         return false;
     };
 
-    audible = isEntityAudible(entity->index());
-    spotted = entity->spotted();
-    health = entity->health();
-    immune = entity->gunGameImmunity();
-    flashDuration = entity->flashDuration();
+    audible = isEntityAudible(entity.getNetworkable().index());
+    spotted = entity.spotted();
+    health = entity.health();
+    immune = entity.gunGameImmunity();
+    flashDuration = entity.flashDuration();
 
-    if (const auto weapon = entity->getActiveWeapon()) {
-        audible = audible || isEntityAudible(weapon->index());
-        if (const auto weaponInfo = weapon->getWeaponData())
-            activeWeapon = interfaces->localize->findAsUTF8(weaponInfo->name);
+    if (const auto weapon = csgo::Entity::from(retSpoofGadgets->client, entity.getActiveWeapon()); weapon.getPOD() != nullptr) {
+        audible = audible || isEntityAudible(weapon.getNetworkable().index());
+        if (const auto weaponInfo = weapon.getWeaponData())
+            activeWeapon = interfaces.getLocalize().findAsUTF8(weaponInfo->name);
     }
 
     if (!alive || !inViewFrustum)
         return;
 
-    const auto model = entity->getModel();
+    const auto model = entity.getRenderable().getModel();
     if (!model)
         return;
 
-    const auto studioModel = interfaces->modelInfo->getStudioModel(model);
+    const auto studioModel = engineInterfaces.getModelInfo().getStudioModel(model);
     if (!studioModel)
         return;
 
-    matrix3x4 boneMatrices[MAXSTUDIOBONES];
-    if (!entity->setupBones(boneMatrices, MAXSTUDIOBONES, BONE_USED_BY_HITBOX, memory->globalVars->currenttime))
+    csgo::matrix3x4 boneMatrices[MAXSTUDIOBONES];
+    if (!entity.setupBones(boneMatrices, MAXSTUDIOBONES, BONE_USED_BY_HITBOX, memory.globalVars->currenttime))
         return;
 
     bones.clear();
@@ -477,14 +479,14 @@ void PlayerData::update(Entity* entity) noexcept
         bones.emplace_back(boneMatrices[i].origin(), boneMatrices[bone->parent].origin());
     }
 
-    const auto set = studioModel->getHitboxSet(entity->hitboxSet());
+    const auto set = studioModel->getHitboxSet(entity.hitboxSet());
     if (!set)
         return;
 
     const auto headBox = set->getHitbox(0);
 
-    headMins = headBox->bbMin.transform(boneMatrices[headBox->bone]);
-    headMaxs = headBox->bbMax.transform(boneMatrices[headBox->bone]);
+    headMins = transform(headBox->bbMin, boneMatrices[headBox->bone]);
+    headMaxs = transform(headBox->bbMax, boneMatrices[headBox->bone]);
 
     if (headBox->capsuleRadius > 0.0f) {
         headMins -= headBox->capsuleRadius;
@@ -543,18 +545,18 @@ ImTextureID PlayerData::getAvatarTexture() const noexcept
     return avatar.texture.get();
 }
 
-float PlayerData::fadingAlpha() const noexcept
+float PlayerData::fadingAlpha(const Memory& memory) const noexcept
 {
     constexpr float fadeTime = 1.50f;
-    return std::clamp(1.0f - (memory->globalVars->realtime - lastContactTime - 0.25f) / fadeTime, 0.0f, 1.0f);
+    return std::clamp(1.0f - (memory.globalVars->realtime - lastContactTime - 0.25f) / fadeTime, 0.0f, 1.0f);
 }
 
-WeaponData::WeaponData(Entity* entity) noexcept : BaseData{ entity }
+WeaponData::WeaponData(const OtherInterfaces& interfaces, const csgo::Entity& entity) noexcept : BaseData{ entity }
 {
-    clip = entity->clip();
-    reserveAmmo = entity->reserveAmmoCount();
+    clip = entity.clip();
+    reserveAmmo = entity.reserveAmmoCount();
 
-    if (const auto weaponInfo = entity->getWeaponData()) {
+    if (const auto weaponInfo = entity.getWeaponData()) {
         group = [](WeaponType type, WeaponId weaponId) {
             switch (type) {
             case WeaponType::Pistol: return "Pistols";
@@ -576,7 +578,7 @@ WeaponData::WeaponData(Entity* entity) noexcept : BaseData{ entity }
                 default: return "All";
                 }
             }
-        }(weaponInfo->type, entity->itemDefinitionIndex());
+        }(weaponInfo->type, entity.itemDefinitionIndex());
         name = [](WeaponId weaponId) {
             switch (weaponId) {
             default: return "All";
@@ -643,15 +645,15 @@ WeaponData::WeaponData(Entity* entity) noexcept : BaseData{ entity }
             case WeaponId::ZoneRepulsor: return "Zone Repulsor";
             case WeaponId::Shield: return "Shield";
             }
-        }(entity->itemDefinitionIndex());
+        }(entity.itemDefinitionIndex());
 
-        displayName = interfaces->localize->findAsUTF8(weaponInfo->name);
+        displayName = interfaces.getLocalize().findAsUTF8(weaponInfo->name);
     }
 }
 
-LootCrateData::LootCrateData(Entity* entity) noexcept : BaseData{ entity }
+LootCrateData::LootCrateData(const csgo::Entity& entity) noexcept : BaseData{ entity }
 {
-    const auto model = entity->getModel();
+    const auto model = entity.getRenderable().getModel();
     if (!model)
         return;
 
@@ -668,23 +670,23 @@ LootCrateData::LootCrateData(Entity* entity) noexcept : BaseData{ entity }
     }(model->name);
 }
 
-ObserverData::ObserverData(Entity* entity, Entity* obs, bool targetIsLocalPlayer) noexcept : playerHandle{ entity->handle() }, targetHandle{ obs->handle() }, targetIsLocalPlayer{ targetIsLocalPlayer } {}
+ObserverData::ObserverData(const csgo::Entity& entity, const csgo::Entity& obs, bool targetIsLocalPlayer) noexcept : playerHandle{ entity.handle() }, targetHandle{ obs.handle() }, targetIsLocalPlayer{ targetIsLocalPlayer } {}
 
-void BombData::update() noexcept
+void BombData::update(const Memory& memory) noexcept
 {
-    if (memory->plantedC4s->size > 0 && (!*memory->gameRules || (*memory->gameRules)->mapHasBombTarget())) {
-        if (const auto bomb = (*memory->plantedC4s)[0]; bomb && bomb->c4Ticking()) {
-            blowTime = bomb->c4BlowTime();
-            timerLength = bomb->c4TimerLength();
-            defuserHandle = bomb->c4Defuser();
+    if (memory.plantedC4s->size > 0 && (!*memory.gameRules || csgo::Entity::from(retSpoofGadgets->client, *memory.gameRules).mapHasBombTarget())) {
+        if (const auto bomb = csgo::PlantedC4::from(retSpoofGadgets->client, (*memory.plantedC4s)[0]); bomb.getPOD() != nullptr && bomb.c4Ticking()) {
+            blowTime = bomb.c4BlowTime();
+            timerLength = bomb.c4TimerLength();
+            defuserHandle = bomb.c4Defuser();
             if (defuserHandle != -1) {
-                defuseCountDown = bomb->c4DefuseCountDown();
-                defuseLength = bomb->c4DefuseLength();
+                defuseCountDown = bomb.c4DefuseCountDown();
+                defuseLength = bomb.c4DefuseLength();
             }
 
-            if (*memory->playerResource) {
-                const auto& bombOrigin = bomb->origin();
-                bombsite = bombOrigin.distTo((*memory->playerResource)->bombsiteCenterA()) > bombOrigin.distTo((*memory->playerResource)->bombsiteCenterB());
+            if (*memory.playerResource) {
+                const auto& bombOrigin = bomb.getEntity().origin();
+                bombsite = bombOrigin.distTo((*memory.playerResource)->bombsiteCenterA()) > bombOrigin.distTo((*memory.playerResource)->bombsiteCenterB());
             }
             return;
         }
@@ -692,13 +694,13 @@ void BombData::update() noexcept
     blowTime = 0.0f;
 }
 
-InfernoData::InfernoData(Entity* inferno) noexcept
+InfernoData::InfernoData(const csgo::Entity& inferno) noexcept
 {
-    const auto& origin = inferno->getAbsOrigin();
+    const auto& origin = inferno.getAbsOrigin();
 
-    points.reserve(inferno->fireCount());
-    for (int i = 0; i < inferno->fireCount(); ++i) {
-        if (inferno->fireIsBurning()[i])
-            points.emplace_back(inferno->fireXDelta()[i] + origin.x, inferno->fireYDelta()[i] + origin.y, inferno->fireZDelta()[i] + origin.z);
+    points.reserve(inferno.fireCount());
+    for (int i = 0; i < inferno.fireCount(); ++i) {
+        if (inferno.fireIsBurning()[i])
+            points.emplace_back(inferno.fireXDelta()[i] + origin.x, inferno.fireYDelta()[i] + origin.y, inferno.fireZDelta()[i] + origin.z);
     }
 }

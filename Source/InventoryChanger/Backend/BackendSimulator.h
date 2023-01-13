@@ -31,8 +31,8 @@ namespace inventory_changer::backend
 
 class BackendSimulator {
 public:
-    explicit BackendSimulator(const game_items::Lookup& gameItemLookup, const game_items::CrateLootLookup& crateLootLookup)
-        : gameItemLookup{ gameItemLookup }, crateLootLookup{ crateLootLookup } {}
+    explicit BackendSimulator(game_items::Lookup gameItemLookup, game_items::CrateLootLookup crateLootLookup, const Memory& memory, Helpers::RandomGenerator& randomGenerator)
+        : gameItemLookup{ std::move(gameItemLookup) }, crateLootLookup{ std::move(crateLootLookup) }, memory{ memory }, randomGenerator{ randomGenerator } {}
 
     [[nodiscard]] const Loadout& getLoadout() const noexcept
     {
@@ -86,7 +86,7 @@ public:
 
     [[nodiscard]] RequestHandler getRequestHandler()
     {
-        return RequestHandler{ getItemModificationHandler(), getItemRemovalHandler(), getInventoryHandler(), getStorageUnitHandler(), items.xRayScanner, getResponseAccumulator(), items.inventory, items.loadout, gameItemLookup, crateLootLookup, ItemConstRemover{ items.inventory } };
+        return RequestHandler{ getItemModificationHandler(), getItemRemovalHandler(), getInventoryHandler(), getStorageUnitHandler(), getResponseAccumulator(), items.inventory, gameItemLookup, ItemConstRemover{ items.inventory } };
     }
 
     [[nodiscard]] PickEmHandler<ResponseAccumulator> getPickEmHandler()
@@ -116,7 +116,7 @@ public:
 
     [[nodiscard]] XRayScannerHandler<ResponseAccumulator> getXRayScannerHandler()
     {
-        return XRayScannerHandler{ gameItemLookup, crateLootLookup, items.xRayScanner, getInventoryHandler(), getItemRemovalHandler(), getResponseAccumulator(), ItemConstRemover{ items.inventory } };
+        return XRayScannerHandler{ getItemGenerator(), items.xRayScanner, getInventoryHandler(), getItemRemovalHandler(), getResponseAccumulator(), ItemConstRemover{ items.inventory } };
     }
 
     [[nodiscard]] ItemModificationHandler<ResponseAccumulator> getItemModificationHandler()
@@ -126,7 +126,7 @@ public:
 
     [[nodiscard]] ItemActivationHandler<ResponseAccumulator> getItemActivationHandler()
     {
-        return ItemActivationHandler{ gameItemLookup, crateLootLookup, getInventoryHandler(), getItemRemovalHandler(), getResponseAccumulator() };
+        return ItemActivationHandler{ gameItemLookup, crateLootLookup, getItemGenerator(), getInventoryHandler(), getItemRemovalHandler(), getResponseAccumulator() };
     }
 
     template <typename GameInventory>
@@ -140,14 +140,21 @@ public:
         return items.xRayScanner.getItems().has_value();
     }
 
+    [[nodiscard]] ItemGenerator getItemGenerator() const noexcept
+    {
+        return ItemGenerator{ memory, randomGenerator, gameItemLookup, crateLootLookup };
+    }
+
 private:
     [[nodiscard]] ResponseAccumulator getResponseAccumulator()
     {
         return ResponseAccumulator{ items.responseQueue };
     }
 
-    const game_items::Lookup& gameItemLookup;
-    const game_items::CrateLootLookup& crateLootLookup;
+    game_items::Lookup gameItemLookup;
+    game_items::CrateLootLookup crateLootLookup;
+    const Memory& memory;
+    Helpers::RandomGenerator& randomGenerator;
     Items items;
     PickEm pickEm;
 };

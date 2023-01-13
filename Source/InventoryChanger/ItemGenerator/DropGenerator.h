@@ -1,31 +1,25 @@
 #pragma once
 
-#include "../../Memory.h"
-#include <SDK/WeaponId.h>
+#include <algorithm>
+
+#include <CSGO/WeaponId.h>
 
 #include <InventoryChanger/GameIntegration/Misc.h>
 #include <InventoryChanger/GameItems/Lookup.h>
 #include <InventoryChanger/Inventory/Item.h>
 #include <InventoryChanger/Inventory/Structs.h>
 
-#include <SDK/Constants/Tournament.h>
-#include <SDK/ItemSchema.h>
+#include <CSGO/Constants/Tournament.h>
+#include <CSGO/ItemSchema.h>
 
 namespace inventory_changer::item_generator
 {
 
-[[nodiscard]] inline std::uint8_t getNumberOfSupportedStickerSlots(WeaponId weaponID) noexcept
-{
-    if (const auto def = memory->itemSystem()->getItemSchema()->getItemDefinitionInterface(weaponID))
-        return static_cast<std::uint8_t>(std::clamp(def->getNumberOfSupportedStickerSlots(), 0, 5));
-    return 0;
-}
-
-template <typename AttributeGenerator>
+template <typename AttributeGenerator, typename StickerSlotCountGetter>
 class DropGenerator {
 public:
-    explicit DropGenerator(const game_items::Lookup& gameItemLookup, AttributeGenerator attributeGenerator)
-        : gameItemLookup{ gameItemLookup }, attributeGenerator{ attributeGenerator } {}
+    explicit DropGenerator(const game_items::Lookup& gameItemLookup, AttributeGenerator attributeGenerator, StickerSlotCountGetter stickerSlotCountGetter)
+        : gameItemLookup{ gameItemLookup }, attributeGenerator{ attributeGenerator }, stickerSlotCountGetter{ stickerSlotCountGetter } {}
 
     [[nodiscard]] inventory::Item::VariantProperties createVariantProperties(const game_items::Item& unlockedItem, const inventory::Item& caseItem, bool willProduceStatTrak) const
     {
@@ -39,11 +33,12 @@ public:
         return {};
     }
 
-    [[nodiscard]] inventory::Item::CommonProperties createCommonProperties(const inventory::Item* crateKey) const
+    [[nodiscard]] inventory::Item::CommonProperties createCommonProperties(const inventory::Item& crate, const inventory::Item* crateKey) const
     {
+        inventory::Item::CommonProperties properties{ .tradableAfterDate = crate.getProperties().common.tradableAfterDate };
         if (crateKey)
-            return { .tradableAfterDate = crateKey->getProperties().common.tradableAfterDate };
-        return {};
+            properties.tradableAfterDate = (std::max)(properties.tradableAfterDate, crateKey->getProperties().common.tradableAfterDate);
+        return properties;
     }
 
 private:
@@ -84,7 +79,7 @@ private:
                 stickers[3].stickerID = game_integration::getTournamentMapGoldStickerID(map);
         }
 
-        attributeGenerator.shuffleStickers(getNumberOfSupportedStickerSlots(weaponID), stickers);
+        attributeGenerator.shuffleStickers(stickerSlotCountGetter(weaponID), stickers);
         return stickers;
     }
 
@@ -116,6 +111,7 @@ private:
 
     const game_items::Lookup& gameItemLookup;
     AttributeGenerator attributeGenerator;
+    StickerSlotCountGetter stickerSlotCountGetter;
 };
 
 }

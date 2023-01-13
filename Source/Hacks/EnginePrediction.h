@@ -1,9 +1,12 @@
 #pragma once
 
-struct UserCmd;
+#include "../Memory.h"
+
+class ClientInterfaces;
+namespace csgo { struct UserCmd; }
 
 namespace EnginePrediction
 {
-    void run(UserCmd* cmd) noexcept;
+    void run(const ClientInterfaces& clientInterfaces, const Memory& memory, csgo::UserCmd* cmd) noexcept;
     int getFlags() noexcept;
 }
